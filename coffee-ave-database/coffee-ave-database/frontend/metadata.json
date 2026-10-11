@@ -1,0 +1,6 @@
+{
+  "name": "Coffee Ave — Auto Ave Unli Car Wash & Lounge",
+  "description": "Hybrid artisanal coffee lounge and unli car wash with unified cart ordering and real-time vehicle wash status tracking.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
