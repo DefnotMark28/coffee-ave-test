@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import type { Client, InValue } from '@libsql/client';
+import { hashPassword, verifyPassword } from './auth';
 import { INITIAL_NOTIFICATIONS, INITIAL_VEHICLES, PRODUCTS } from '../frontend/src/data/mockData';
 
 export const databaseTables = ['products', 'vehicles', 'notifications', 'users'] as const;
@@ -111,6 +112,12 @@ async function initializeDatabase() {
     'write',
   );
 
+  // Older databases were created before passwords existed, so add the column when it is missing.
+  const columns = await db.execute('PRAGMA table_info(users)');
+  if (!columns.rows.some((column) => column.name === 'password_hash')) {
+    await db.execute('ALTER TABLE users ADD COLUMN password_hash TEXT');
+  }
+
   await seedIfEmpty(
     'products',
     PRODUCTS.map((p) => ({ id: p.id, values: tableSpecs.products.toValues(p as unknown as RecordData), record: p })),
@@ -219,7 +226,9 @@ export async function getTableRows(table: string) {
   const name = getTable(table);
   if (!name) return null;
   const db = await getClient();
-  const result = await db.execute(`SELECT * FROM ${name} ORDER BY rowid`);
+  const select =
+    name === 'users' ? 'id, name, email, plate_number, vehicle_model, membership, created_at, data_json' : '*';
+  const result = await db.execute(`SELECT ${select} FROM ${name} ORDER BY rowid`);
   return result.rows.map((row) => ({ ...row }));
 }
 
@@ -291,26 +300,68 @@ export const getVehicles = () => getRecords('vehicles');
 export const getNotifications = () => getRecords('notifications');
 
 /* ------------------------------------------------------------------ */
-/* Sign up                                                             */
+/* Members: sign up, sign in, profile                                  */
 /* ------------------------------------------------------------------ */
 
-export async function registerUser(input: unknown) {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) {
-    throw new ValidationError('Sign up details are missing.');
+export type PublicUser = {
+  id: string;
+  name: string;
+  email: string;
+  plateNumber: string;
+  vehicleModel: string;
+  membership: 'unli' | 'club';
+  createdAt: string;
+};
+
+function toPublicUser(record: RecordData): PublicUser {
+  return {
+    id: String(record.id),
+    name: String(record.name),
+    email: String(record.email),
+    plateNumber: String(record.plateNumber),
+    vehicleModel: String(record.vehicleModel),
+    membership: record.membership === 'club' ? 'club' : 'unli',
+    createdAt: String(record.createdAt ?? ''),
+  };
+}
+
+function checkPassword(value: unknown) {
+  if (typeof value !== 'string' || value.length < 8) {
+    throw new ValidationError('Password must be at least 8 characters.');
   }
-  const data = input as RecordData;
+  if (value.length > 200) throw new ValidationError('Password is too long.');
+  return value;
+}
+
+function checkEmail(data: RecordData) {
   const email = requiredString(data, 'email', 254).toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     throw new ValidationError('Please enter a valid email address.');
   }
+  return email;
+}
+
+export async function registerUser(input: unknown): Promise<PublicUser> {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new ValidationError('Sign up details are missing.');
+  }
+  const data = input as RecordData;
+  const email = checkEmail(data);
+  const password = checkPassword(data.password);
   const membership = data.membership === 'club' ? 'club' : 'unli';
 
   const db = await getClient();
-  const existing = await db.execute({ sql: 'SELECT id, created_at FROM users WHERE email = ?', args: [email] });
+  const existing = await db.execute({ sql: 'SELECT id, created_at, password_hash FROM users WHERE email = ?', args: [email] });
+  const row = existing.rows[0];
 
-  const id = existing.rows.length > 0 ? String(existing.rows[0].id) : `user-${randomUUID()}`;
-  const createdAt = existing.rows.length > 0 ? String(existing.rows[0].created_at) : new Date().toISOString();
+  // An email that already has a password belongs to a real account.
+  if (row && row.password_hash) {
+    throw new ValidationError('An account with this email already exists. Please sign in instead.');
+  }
 
+  // An email saved before passwords existed can claim its account by choosing a password.
+  const id = row ? String(row.id) : `user-${randomUUID()}`;
+  const createdAt = row ? String(row.created_at) : new Date().toISOString();
   const record: RecordData = {
     id,
     name: requiredString(data, 'name', 100),
@@ -321,15 +372,107 @@ export async function registerUser(input: unknown) {
     createdAt,
   };
   const values = tableSpecs.users.toValues(record);
+  const passwordHash = await hashPassword(password);
 
-  if (existing.rows.length > 0) {
-    await updateTableRow('users', id, record);
+  if (row) {
+    await db.execute({
+      sql: `UPDATE users SET ${tableSpecs.users.columns.map((c) => `${c} = ?`).join(', ')}, data_json = ?, password_hash = ? WHERE id = ?`,
+      args: [...values, JSON.stringify(record), passwordHash, id],
+    });
   } else {
     await db.execute({
-      sql: `INSERT INTO users (id, ${tableSpecs.users.columns.join(', ')}, data_json) VALUES (?, ${values.map(() => '?').join(', ')}, ?)`,
-      args: [id, ...values, JSON.stringify(record)],
+      sql: `INSERT INTO users (id, ${tableSpecs.users.columns.join(', ')}, data_json, password_hash) VALUES (?, ${values.map(() => '?').join(', ')}, ?, ?)`,
+      args: [id, ...values, JSON.stringify(record), passwordHash],
     });
   }
+  return toPublicUser(record);
+}
 
-  return { id, name: record.name, email, plateNumber: record.plateNumber, vehicleModel: record.vehicleModel, membership };
+export async function loginUser(input: unknown): Promise<PublicUser | null> {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+  const data = input as RecordData;
+  if (typeof data.email !== 'string' || typeof data.password !== 'string') return null;
+
+  const db = await getClient();
+  const result = await db.execute({
+    sql: 'SELECT data_json, password_hash FROM users WHERE email = ?',
+    args: [data.email.trim().toLowerCase()],
+  });
+  const row = result.rows[0];
+  if (!row || !(await verifyPassword(data.password, row.password_hash ? String(row.password_hash) : null))) return null;
+  return toPublicUser(JSON.parse(String(row.data_json)));
+}
+
+export async function getUserById(id: string): Promise<PublicUser | null> {
+  const db = await getClient();
+  const result = await db.execute({ sql: 'SELECT data_json FROM users WHERE id = ?', args: [id] });
+  return result.rows[0] ? toPublicUser(JSON.parse(String(result.rows[0].data_json))) : null;
+}
+
+// Members can change their own details. Email and join date stay as they are.
+export async function updateOwnProfile(id: string, input: unknown): Promise<PublicUser> {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new ValidationError('Profile details are missing.');
+  }
+  const data = input as RecordData;
+  const current = await getUserById(id);
+  if (!current) throw new ValidationError('Account not found.');
+
+  const record: RecordData = {
+    ...current,
+    name: requiredString(data, 'name', 100),
+    plateNumber: requiredString(data, 'plateNumber', 20).toUpperCase(),
+    vehicleModel: requiredString(data, 'vehicleModel', 100),
+    membership: data.membership === 'club' ? 'club' : 'unli',
+  };
+  const values = tableSpecs.users.toValues(record);
+  const db = await getClient();
+  await db.execute({
+    sql: `UPDATE users SET ${tableSpecs.users.columns.map((c) => `${c} = ?`).join(', ')}, data_json = ? WHERE id = ?`,
+    args: [...values, JSON.stringify(record), id],
+  });
+  return toPublicUser(record);
+}
+
+export async function changeOwnPassword(id: string, input: unknown) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new ValidationError('Password details are missing.');
+  }
+  const data = input as RecordData;
+  const newPassword = checkPassword(data.newPassword);
+  const db = await getClient();
+  const result = await db.execute({ sql: 'SELECT password_hash FROM users WHERE id = ?', args: [id] });
+  const stored = result.rows[0]?.password_hash;
+  if (typeof data.currentPassword !== 'string' || !(await verifyPassword(data.currentPassword, stored ? String(stored) : null))) {
+    throw new ValidationError('Your current password is not correct.');
+  }
+  await db.execute({ sql: 'UPDATE users SET password_hash = ? WHERE id = ?', args: [await hashPassword(newPassword), id] });
+}
+
+/* ------------------------------------------------------------------ */
+/* Admin dashboard totals                                              */
+/* ------------------------------------------------------------------ */
+
+export async function getAdminStats() {
+  const db = await getClient();
+  const count = async (sql: string) => Number((await db.execute(sql)).rows[0].count);
+  const [members, withPassword, newThisWeek, unli, club, products, washPackages, vehicles, preparing, cleaning, ready, unread] =
+    await Promise.all([
+      count('SELECT COUNT(*) AS count FROM users'),
+      count('SELECT COUNT(*) AS count FROM users WHERE password_hash IS NOT NULL'),
+      (async () => {
+        const since = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
+        return Number((await db.execute({ sql: 'SELECT COUNT(*) AS count FROM users WHERE created_at >= ?', args: [since] })).rows[0].count);
+      })(),
+      count("SELECT COUNT(*) AS count FROM users WHERE membership = 'unli'"),
+      count("SELECT COUNT(*) AS count FROM users WHERE membership = 'club'"),
+      count('SELECT COUNT(*) AS count FROM products'),
+      count('SELECT COUNT(*) AS count FROM products WHERE is_wash_package = 1'),
+      count('SELECT COUNT(*) AS count FROM vehicles'),
+      count('SELECT COUNT(*) AS count FROM vehicles WHERE stage = 1'),
+      count('SELECT COUNT(*) AS count FROM vehicles WHERE stage = 2'),
+      count('SELECT COUNT(*) AS count FROM vehicles WHERE stage = 3'),
+      count('SELECT COUNT(*) AS count FROM notifications WHERE is_read = 0'),
+    ]);
+  return { members, withPassword, newThisWeek, unli, club, products, washPackages, vehicles, preparing, cleaning, ready, unread };
 }

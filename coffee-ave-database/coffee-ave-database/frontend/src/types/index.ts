@@ -65,3 +65,13 @@ export interface UserNotification {
   read: boolean;
   type: 'wash' | 'cafe' | 'promo';
 }
+
+export interface Member {
+  id: string;
+  name: string;
+  email: string;
+  plateNumber: string;
+  vehicleModel: string;
+  membership: 'unli' | 'club';
+  createdAt: string;
+}

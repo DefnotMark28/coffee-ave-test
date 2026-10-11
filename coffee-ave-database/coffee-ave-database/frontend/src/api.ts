@@ -1,8 +1,16 @@
-import type { Product, UserNotification, VehicleQueueItem } from './types';
+import type { Member, Product, UserNotification, VehicleQueueItem } from './types';
 
-export interface RegisterInput {
+export interface SignUpInput {
   name: string;
   email: string;
+  password: string;
+  plateNumber: string;
+  vehicleModel: string;
+  membership: 'unli' | 'club';
+}
+
+export interface ProfileInput {
+  name: string;
   plateNumber: string;
   vehicleModel: string;
   membership: 'unli' | 'club';
@@ -32,14 +40,22 @@ async function getList<T>(url: string): Promise<T[]> {
   return list as T[];
 }
 
+const json = (method: string, body?: unknown): RequestInit => ({
+  method,
+  headers: { 'Content-Type': 'application/json' },
+  body: body === undefined ? undefined : JSON.stringify(body),
+});
+
 export const api = {
   products: () => getList<Product>('/api/products'),
   vehicles: () => getList<VehicleQueueItem>('/api/vehicles'),
   notifications: () => getList<UserNotification>('/api/notifications'),
-  register: (input: RegisterInput) =>
-    request<{ id: string }>('/api/users', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(input),
-    }),
+
+  me: async () => (await request<{ user: Member | null }>('/api/auth/me')).user,
+  signUp: (input: SignUpInput) => request<Member>('/api/auth/signup', json('POST', input)),
+  signIn: (email: string, password: string) => request<Member>('/api/auth/login', json('POST', { email, password })),
+  signOut: () => request<unknown>('/api/auth/logout', json('POST')),
+  updateProfile: (input: ProfileInput) => request<Member>('/api/me', json('PUT', input)),
+  changePassword: (currentPassword: string, newPassword: string) =>
+    request<unknown>('/api/me/password', json('PUT', { currentPassword, newPassword })),
 };

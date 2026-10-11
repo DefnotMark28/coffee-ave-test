@@ -8,14 +8,15 @@ import { Navbar } from './components/Navbar';
 import { CartDrawer } from './components/CartDrawer';
 import { Footer } from './components/Footer';
 import { BayLiveStreamModal } from './components/BayLiveStreamModal';
-import { SignUpModal } from './components/SignUpModal';
+import { AuthModal, type AuthMode } from './components/AuthModal';
 import { HomeView } from './views/HomeView';
 import { ShopView } from './views/ShopView';
 import { TrackerView } from './views/TrackerView';
 import { CommunityView } from './views/CommunityView';
+import { DashboardView } from './views/DashboardView';
 import { PRODUCTS, INITIAL_VEHICLES, INITIAL_NOTIFICATIONS } from './data/mockData';
 import { api } from './api';
-import { Product, CartItem, VehicleQueueItem, UserNotification, ProductCategory } from './types';
+import { Product, CartItem, VehicleQueueItem, UserNotification, Member } from './types';
 import { Sparkles, Check, Car, Coffee } from 'lucide-react';
 
 export default function App() {
@@ -41,8 +42,25 @@ export default function App() {
     };
   }, []);
   
+  // Signed in member (null when signed out). The server keeps the sign in in a secure cookie.
+  const [member, setMember] = useState<Member | null>(null);
+  useEffect(() => {
+    api.me().then((user) => {
+      if (!user) return;
+      setMember(user);
+      setSavedPlateNumber(user.plateNumber);
+    }).catch(() => {
+      // Not signed in, or the server is not reachable.
+    });
+  }, []);
+
   // Modals
-  const [isSignUpOpen, setIsSignUpOpen] = useState<boolean>(false);
+  const [authMode, setAuthMode] = useState<AuthMode>('signup');
+  const [isAuthOpen, setIsAuthOpen] = useState<boolean>(false);
+  const openAuth = (mode: AuthMode) => {
+    setAuthMode(mode);
+    setIsAuthOpen(true);
+  };
   const [isLiveBayModalOpen, setIsLiveBayModalOpen] = useState<boolean>(false);
   const [selectedVehicleForBay, setSelectedVehicleForBay] = useState<VehicleQueueItem | null>(null);
 
@@ -187,6 +205,17 @@ export default function App() {
     setIsLiveBayModalOpen(true);
   };
 
+  const handleSignOut = async () => {
+    try {
+      await api.signOut();
+    } catch {
+      // The cookie will expire on its own if the server cannot be reached.
+    }
+    setMember(null);
+    if (currentTab === 'dashboard') setCurrentTab('home');
+    showToast('You have been signed out');
+  };
+
   const markNotificationsAsRead = () => {
     setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
   };
@@ -207,6 +236,9 @@ export default function App() {
         openCart={() => setIsCartOpen(true)}
         notifications={notifications}
         markNotificationsAsRead={markNotificationsAsRead}
+        member={member}
+        onOpenSignIn={() => openAuth('signin')}
+        onSignOut={handleSignOut}
       />
 
       {/* Main View Router */}
@@ -216,7 +248,7 @@ export default function App() {
             onNavigate={(tab) => setCurrentTab(tab)}
             onAddToCart={handleAddToCart}
             bestSellers={bestSellers}
-            onOpenSignUp={() => setIsSignUpOpen(true)}
+            onOpenSignUp={() => (member ? setCurrentTab('dashboard') : openAuth('signup'))}
             onOpenBayModal={() => {
               setSelectedVehicleForBay(vehicles[0] || null);
               setIsLiveBayModalOpen(true);
@@ -249,9 +281,26 @@ export default function App() {
           />
         )}
 
+        {currentTab === 'dashboard' && (
+          <DashboardView
+            member={member}
+            vehicles={vehicles}
+            notifications={notifications}
+            onMemberUpdated={(updated) => {
+              setMember(updated);
+              setSavedPlateNumber(updated.plateNumber);
+            }}
+            onOpenLiveCamera={handleOpenLiveCamera}
+            onNavigate={(tab) => setCurrentTab(tab)}
+            onOpenSignIn={() => openAuth('signin')}
+            onSignOut={handleSignOut}
+            showToast={showToast}
+          />
+        )}
+
         {currentTab === 'community' && (
           <CommunityView
-            onOpenSignUp={() => setIsSignUpOpen(true)}
+            onOpenSignUp={() => (member ? setCurrentTab('dashboard') : openAuth('signup'))}
             onNavigate={(tab) => setCurrentTab(tab)}
           />
         )}
@@ -283,13 +332,18 @@ export default function App() {
         selectedVehicle={selectedVehicleForBay}
       />
 
-      {/* Sign Up VIP Modal */}
-      <SignUpModal
-        isOpen={isSignUpOpen}
-        onClose={() => setIsSignUpOpen(false)}
-        onRegisterSuccess={(user) => {
+      {/* Sign up / sign in modal */}
+      <AuthModal
+        isOpen={isAuthOpen}
+        mode={authMode}
+        onModeChange={setAuthMode}
+        onClose={() => setIsAuthOpen(false)}
+        onSuccess={(user, mode) => {
+          setMember(user);
           setSavedPlateNumber(user.plateNumber);
-          showToast(`Welcome ${user.name}! Plate ${user.plateNumber} registered.`);
+          showToast(mode === 'signup' ? `Welcome ${user.name}! Plate ${user.plateNumber} registered.` : `Welcome back, ${user.name.split(' ')[0]}!`);
+          setCurrentTab('dashboard');
+          window.scrollTo({ top: 0, behavior: 'smooth' });
         }}
       />
 

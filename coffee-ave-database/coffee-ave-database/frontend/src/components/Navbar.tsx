@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { ShoppingBag, Bell, Menu, X } from 'lucide-react';
-import { UserNotification } from '../types';
+import { ShoppingBag, Bell, Menu, X, LayoutDashboard, LogOut, UserRound } from 'lucide-react';
+import { Member, UserNotification } from '../types';
 
 interface NavbarProps {
   currentTab: string;
@@ -9,6 +9,9 @@ interface NavbarProps {
   openCart: () => void;
   notifications: UserNotification[];
   markNotificationsAsRead: () => void;
+  member: Member | null;
+  onOpenSignIn: () => void;
+  onSignOut: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -17,10 +20,14 @@ export const Navbar: React.FC<NavbarProps> = ({
   cartCount,
   openCart,
   notifications,
-  markNotificationsAsRead
+  markNotificationsAsRead,
+  member,
+  onOpenSignIn,
+  onSignOut,
 }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [showNotifPopover, setShowNotifPopover] = useState(false);
+  const [showAccountMenu, setShowAccountMenu] = useState(false);
 
   const unreadCount = notifications.filter(n => !n.read).length;
 
@@ -31,6 +38,8 @@ export const Navbar: React.FC<NavbarProps> = ({
     { id: 'tracker', label: 'Live Tracker' },
     { id: 'community', label: 'Community' },
   ];
+
+  const mobileItems = member ? [...navItems, { id: 'dashboard', label: 'My Dashboard' }] : navItems;
 
   const handleNavClick = (id: string) => {
     setCurrentTab(id);
@@ -178,6 +187,50 @@ export const Navbar: React.FC<NavbarProps> = ({
             </span>
           </button>
 
+          {/* Account: sign in button, or member menu */}
+          {member ? (
+            <div className="relative">
+              <button
+                onClick={() => setShowAccountMenu((v) => !v)}
+                aria-label="Account menu"
+                className="flex items-center gap-2 pl-1.5 pr-3 py-1.5 rounded-full bg-[#26201b] hover:bg-[#2f2721] border border-white/10 hover:border-[#d4af37]/40 transition-all cursor-pointer"
+              >
+                <span className="w-7 h-7 rounded-full bg-[#c0392b] text-white text-xs font-bold flex items-center justify-center uppercase">
+                  {member.name.trim().charAt(0) || 'M'}
+                </span>
+                <span className="text-xs font-semibold hidden sm:inline max-w-[90px] truncate">{member.name.split(' ')[0]}</span>
+              </button>
+              {showAccountMenu && (
+                <div className="absolute right-0 mt-2 w-56 bg-[#211d1a] border border-white/10 rounded-xl shadow-2xl p-2 z-50">
+                  <div className="px-3 py-2 border-b border-white/10 mb-1">
+                    <p className="text-xs font-semibold text-white truncate">{member.name}</p>
+                    <p className="text-[11px] text-[#ede8e3]/50 truncate">{member.email}</p>
+                  </div>
+                  <button
+                    onClick={() => { setShowAccountMenu(false); handleNavClick('dashboard'); }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs text-[#ede8e3]/85 hover:bg-white/5 hover:text-white cursor-pointer"
+                  >
+                    <LayoutDashboard className="w-4 h-4 text-[#d4af37]" /> My Dashboard
+                  </button>
+                  <button
+                    onClick={() => { setShowAccountMenu(false); setMobileMenuOpen(false); onSignOut(); }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs text-[#ede8e3]/85 hover:bg-white/5 hover:text-white cursor-pointer"
+                  >
+                    <LogOut className="w-4 h-4 text-[#c0392b]" /> Sign out
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : (
+            <button
+              onClick={onOpenSignIn}
+              className="flex items-center gap-2 px-3.5 py-2 rounded-full border border-[#d4af37]/40 hover:border-[#d4af37] text-[#d4af37] hover:text-white text-xs font-semibold tracking-wide transition-all cursor-pointer"
+            >
+              <UserRound className="w-4 h-4" />
+              <span className="hidden sm:inline">Sign in</span>
+            </button>
+          )}
+
           {/* Mobile menu hamburger */}
           <button
             onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
@@ -192,7 +245,7 @@ export const Navbar: React.FC<NavbarProps> = ({
       {/* Mobile nav dropdown */}
       {mobileMenuOpen && (
         <div className="md:hidden bg-[#1e1916] border-b border-white/10 px-4 pt-2 pb-6 space-y-1">
-          {navItems.map((item) => {
+          {mobileItems.map((item) => {
             const isActive = currentTab === item.id;
             return (
               <button
